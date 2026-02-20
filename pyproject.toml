@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = "Apache-2.0"
 dependencies = [
     "langextract @ git+https://github.com/IgnatG/langextract.git@develop",
-    "litellm>=1.40.0",
+    "litellm>=1.81.13",
 ]
 
 [project.entry-points."langextract.providers"]

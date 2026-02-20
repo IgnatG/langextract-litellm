@@ -1165,7 +1165,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "langextract", git = "https://github.com/IgnatG/langextract.git?rev=develop" },
-    { name = "litellm", specifier = ">=1.40.0" },
+    { name = "litellm", specifier = ">=1.81.13" },
 ]
 
 [package.metadata.requires-dev]
