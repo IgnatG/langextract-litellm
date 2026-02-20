@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 # Keys consumed internally by the provider and must not be
 # forwarded to ``litellm.completion()`` / ``litellm.acompletion()``.
-_INTERNAL_KEYS: frozenset[str] = frozenset({"max_workers"})
+_INTERNAL_KEYS: frozenset[str] = frozenset({"max_workers", "pass_num"})
 
 
 @lx.providers.registry.register(r"^litellm", priority=10)
@@ -112,11 +112,22 @@ class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
         Args:
             batch_prompts: List of prompts to process.
             **kwargs: Additional inference parameters that override
-                instance defaults.
+                instance defaults.  ``pass_num`` (int) is consumed
+                internally: when >= 1 the call includes
+                ``cache={"no-cache": True}`` so that repeat
+                extraction passes are never served from the LiteLLM
+                response cache.
 
         Yields:
             Lists of ScoredOutput objects, one per prompt.
         """
+        pass_num: int = kwargs.pop("pass_num", 0)
+
+        # Build per-call kwargs: instance defaults + cache bypass.
+        call_kwargs = dict(self._litellm_kwargs)
+        if pass_num >= 1:
+            call_kwargs["cache"] = {"no-cache": True}
+
         for prompt in batch_prompts:
             try:
                 logger.info(
@@ -130,7 +141,7 @@ class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
                 response = litellm.completion(
                     model=self.model_id,
                     messages=messages,
-                    **self._litellm_kwargs,
+                    **call_kwargs,
                 )
 
                 # Extract the response content
@@ -173,11 +184,21 @@ class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
         Args:
             batch_prompts: List of prompts to process.
             **kwargs: Additional inference parameters.
+                ``pass_num`` (int) is consumed internally: when >= 1
+                the call includes ``cache={"no-cache": True}`` so
+                that repeat extraction passes bypass the LiteLLM
+                response cache.
 
         Returns:
             List of lists of ScoredOutput objects, one per prompt.
         """
+        pass_num: int = kwargs.pop("pass_num", 0)
         semaphore = self._get_semaphore()
+
+        # Build per-call kwargs: instance defaults + cache bypass.
+        call_kwargs = dict(self._litellm_kwargs)
+        if pass_num >= 1:
+            call_kwargs["cache"] = {"no-cache": True}
 
         async def _process_single(prompt: str) -> list[lx.inference.ScoredOutput]:
             async with semaphore:
@@ -191,7 +212,7 @@ class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
                     response = await litellm.acompletion(
                         model=self.model_id,
                         messages=messages,
-                        **self._litellm_kwargs,
+                        **call_kwargs,
                     )
 
                     if response.choices and len(response.choices) > 0:

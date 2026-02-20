@@ -189,6 +189,30 @@ When using `async_extract`, the LiteLLM provider:
 - Calls `litellm.acompletion()` for non-blocking HTTP requests
 - Pipelines inference with alignment for improved throughput
 
+### Multi-Pass Cache Bypass
+
+When LangExtract runs multiple extraction passes (`extraction_passes > 1`), the
+first pass is cacheable by LiteLLM's Redis cache, but subsequent passes
+automatically bypass the cache. This ensures that each additional pass produces a
+fresh LLM response — which is the entire point of multi-pass extraction for
+improved recall.
+
+The mechanism is fully automatic: LangExtract threads a `pass_num` keyword
+argument through to the provider. When `pass_num >= 1`, the LiteLLM provider
+injects `cache={"no-cache": True}` into the `litellm.completion()` /
+`litellm.acompletion()` call, telling LiteLLM's cache layer to skip the lookup
+and force a live API call.
+
+| Pass | `pass_num` value | Cache behaviour |
+|------|------------------|-----------------|
+| 1    | `0`              | Normal — may be served from cache |
+| 2    | `1`              | Bypass — always calls the LLM |
+| 3+   | `2+`             | Bypass — always calls the LLM |
+
+> **Note:** `pass_num` is consumed internally by the provider and is never
+> forwarded to LiteLLM. You do not need to set it manually — LangExtract
+> passes it automatically during multi-pass extraction.
+
 ### Model ID Formats
 
 The model ID must start with `litellm/` or `litellm-` to be handled by this provider.
@@ -223,6 +247,16 @@ config = lx.factory.ModelConfig(
 )
 model = lx.factory.create_model(config)
 ```
+
+#### Internal / Reserved Parameters
+
+The following keyword arguments are consumed internally by the provider and are
+**never forwarded** to `litellm.completion()` / `litellm.acompletion()`:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `max_workers` | `int` | `10` | Maximum concurrent async requests (semaphore size) |
+| `pass_num` | `int` | `0` | Current extraction pass (0-indexed). Set automatically by LangExtract during multi-pass extraction. When ≥ 1, the provider injects `cache={"no-cache": True}` so that repeat passes always get fresh LLM responses. |
 
 To supply an API key directly instead of via an environment variable:
 
