@@ -71,7 +71,7 @@ class TestAsyncInfer:
 
         assert len(results) == 1
         assert results[0][0].score == 0.0
-        assert "API fail" in results[0][0].output
+        assert results[0][0].output == "LLM inference failed"
 
     @pytest.mark.asyncio
     async def test_empty_response(self):

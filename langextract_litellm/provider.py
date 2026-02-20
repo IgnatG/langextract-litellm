@@ -7,10 +7,14 @@ from typing import Any
 
 import langextract as lx
 import litellm
-from langextract import data, exceptions, schema
 from langextract.core.base_model import BaseLanguageModel
 from langextract.core.types import ScoredOutput
 from langextract.providers import registry
+from litellm.exceptions import (
+    APIConnectionError as LiteLLMConnectionError,
+    APIError as LiteLLMAPIError,
+    Timeout as LiteLLMTimeout,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,37 +25,45 @@ _INTERNAL_KEYS: frozenset[str] = frozenset({"max_workers", "pass_num"})
 
 @lx.providers.registry.register(r"^litellm", priority=10)
 class LiteLLMLanguageModel(BaseLanguageModel):
-    """LangExtract provider for LiteLLM.
+    """LangExtract provider backed by LiteLLM's unified API.
 
-    This provider supports a wide range of models through LiteLLM's unified API,
-    including OpenAI GPT models, Anthropic Claude, Google PaLM, and many open-source models.
+    Routes to any model supported by LiteLLM (OpenAI, Anthropic,
+    Google, Mistral, Ollama, vLLM, Azure, Bedrock, …).  Model IDs
+    must carry a ``litellm/`` or ``litellm-`` prefix so that the
+    LangExtract provider registry can dispatch to this class.
 
-    Supported model patterns:
-    - litellm-* (explicit LiteLLM prefix)
-    - gpt-* (OpenAI models)
-    - claude-* (Anthropic models)
-    - gemini-*, palm-* (Google models)
-    - llama*, mistral*, codellama* (Meta/Mistral models)
-    - And many more open-source models
+    Registration pattern: ``r"^litellm"`` (priority 10).
+
+    Examples::
+
+        litellm/gpt-4o
+        litellm/anthropic/claude-3-opus
+        litellm/ollama/llama3
+        litellm-azure/gpt-4o
     """
 
-    def __init__(self, model_id: str, api_key: str = None, **kwargs):
+    def __init__(self, model_id: str, **kwargs: Any) -> None:
         """Initialize the LiteLLM provider.
 
         Args:
-            model_id: The model identifier (e.g., 'gpt-4', 'claude-3-opus', 'llama-2-7b-chat').
-            api_key: API key for authentication. If not provided, LiteLLM will automatically
-                    look for provider-specific environment variables (OPENAI_API_KEY,
+            model_id: The model identifier (e.g., 'gpt-4',
+                'claude-3-opus', 'llama-2-7b-chat').
+            **kwargs: Any parameters supported by
+                litellm.completion(), including:
+                - api_key: API key for authentication. If not
+                    provided, LiteLLM uses provider-specific
+                    environment variables (OPENAI_API_KEY,
                     ANTHROPIC_API_KEY, GOOGLE_API_KEY, etc.)
-            **kwargs: Any parameters supported by litellm.completion(), including:
-                    - api_base: Custom API base URL
-                    - temperature: Sampling temperature (0.0-1.0)
-                    - max_tokens: Maximum tokens to generate
-                    - top_p: Top-p sampling parameter
-                    - frequency_penalty: Frequency penalty (-2.0 to 2.0)
-                    - presence_penalty: Presence penalty (-2.0 to 2.0)
-                    - timeout: Request timeout in seconds
-                    - And any other LiteLLM-supported parameters
+                - api_base: Custom API base URL
+                - temperature: Sampling temperature (0.0-1.0)
+                - max_tokens: Maximum tokens to generate
+                - top_p: Top-p sampling parameter
+                - frequency_penalty: Frequency penalty
+                - presence_penalty: Presence penalty
+                - timeout: Request timeout in seconds
+                - max_workers (int): Maximum concurrent async
+                    requests (default: 10). Consumed internally,
+                    not forwarded to LiteLLM.
         """
         super().__init__()
 
@@ -106,8 +118,38 @@ class LiteLLMLanguageModel(BaseLanguageModel):
             self._semaphore = asyncio.Semaphore(self._max_workers)
         return self._semaphore
 
+    def _parse_response(self, response: Any) -> list[ScoredOutput]:
+        """Convert a LiteLLM response to a list of ScoredOutput.
+
+        Centralises the response-extraction logic so that both
+        ``infer()`` and ``async_infer()`` share the same code path.
+
+        Args:
+            response: The response object returned by
+                ``litellm.completion()`` or
+                ``litellm.acompletion()``.
+
+        Returns:
+            A single-element list of ScoredOutput with score 1.0
+            on success, or score 0.0 for empty/missing content.
+        """
+        if response.choices:
+            content = response.choices[0].message.content
+            if content:
+                return [ScoredOutput(score=1.0, output=content)]
+            logger.warning(
+                "Empty response from LiteLLM for model %s",
+                self.model_id,
+            )
+            return [ScoredOutput(score=0.0, output="")]
+        logger.error(
+            "No choices in response from LiteLLM for model %s",
+            self.model_id,
+        )
+        return [ScoredOutput(score=0.0, output="")]
+
     def infer(
-        self, batch_prompts, **kwargs
+        self, batch_prompts: Sequence[str], **kwargs: Any
     ) -> Iterator[Sequence[ScoredOutput]]:
         """Run inference on a batch of prompts.
 
@@ -130,15 +172,20 @@ class LiteLLMLanguageModel(BaseLanguageModel):
         if pass_num >= 1:
             call_kwargs["cache"] = {"no-cache": True}
 
+        logger.info(
+            "Running sync inference for %d prompt(s) on %s",
+            len(batch_prompts),
+            self.model_id,
+        )
+
         for prompt in batch_prompts:
             try:
-                logger.info(
+                logger.debug(
                     "Calling LiteLLM completion for model %s",
                     self.model_id,
                 )
 
-                # Format prompt as messages for chat models
-                messages = [{"role": "user", "content": str(prompt)}]
+                messages = [{"role": "user", "content": prompt}]
 
                 response = litellm.completion(
                     model=self.model_id,
@@ -146,35 +193,33 @@ class LiteLLMLanguageModel(BaseLanguageModel):
                     **call_kwargs,
                 )
 
-                # Extract the response content
-                if response.choices and len(response.choices) > 0:
-                    content = response.choices[0].message.content
-                    if content:
-                        yield [ScoredOutput(score=1.0, output=content)]
-                    else:
-                        logger.warning(
-                            "Empty response from LiteLLM for model %s",
-                            self.model_id,
-                        )
-                        yield [ScoredOutput(score=0.0, output="")]
-                else:
-                    logger.error(
-                        "No choices in response from LiteLLM for model %s",
-                        self.model_id,
-                    )
-                    yield [ScoredOutput(score=0.0, output="")]
+                yield self._parse_response(response)
 
-            except Exception as e:
-                logger.error(
-                    "Error calling LiteLLM completion for model %s: %s",
+            except (
+                LiteLLMAPIError,
+                LiteLLMConnectionError,
+                LiteLLMTimeout,
+            ) as e:
+                logger.warning(
+                    "LiteLLM API error for model %s: %s",
                     self.model_id,
                     e,
                 )
-                error_msg = f"LiteLLM API error: {e}"
-                yield [ScoredOutput(score=0.0, output=error_msg)]
+                yield [ScoredOutput(
+                    score=0.0, output="LLM inference failed"
+                )]
+            except Exception:
+                logger.exception(
+                    "Unexpected error during LiteLLM inference "
+                    "for model %s",
+                    self.model_id,
+                )
+                yield [ScoredOutput(
+                    score=0.0, output="LLM inference failed"
+                )]
 
     async def async_infer(
-        self, batch_prompts, **kwargs
+        self, batch_prompts: Sequence[str], **kwargs: Any
     ) -> list[Sequence[ScoredOutput]]:
         """Native async inference using ``litellm.acompletion``.
 
@@ -202,14 +247,20 @@ class LiteLLMLanguageModel(BaseLanguageModel):
         if pass_num >= 1:
             call_kwargs["cache"] = {"no-cache": True}
 
+        logger.info(
+            "Running async inference for %d prompt(s) on %s",
+            len(batch_prompts),
+            self.model_id,
+        )
+
         async def _process_single(prompt: str) -> list[ScoredOutput]:
             async with semaphore:
                 try:
-                    logger.info(
+                    logger.debug(
                         "Calling LiteLLM acompletion for model %s",
                         self.model_id,
                     )
-                    messages = [{"role": "user", "content": str(prompt)}]
+                    messages = [{"role": "user", "content": prompt}]
 
                     response = await litellm.acompletion(
                         model=self.model_id,
@@ -217,34 +268,32 @@ class LiteLLMLanguageModel(BaseLanguageModel):
                         **call_kwargs,
                     )
 
-                    if response.choices and len(response.choices) > 0:
-                        content = response.choices[0].message.content
-                        if content:
-                            return [
-                                ScoredOutput(score=1.0, output=content)
-                            ]
-                        else:
-                            logger.warning(
-                                "Empty response from LiteLLM for model %s",
-                                self.model_id,
-                            )
-                            return [ScoredOutput(score=0.0, output="")]
-                    else:
-                        logger.error(
-                            "No choices in response from LiteLLM for model %s",
-                            self.model_id,
-                        )
-                        return [ScoredOutput(score=0.0, output="")]
+                    return self._parse_response(response)
 
-                except Exception as e:
-                    logger.error(
-                        "Error calling LiteLLM acompletion for model %s: %s",
+                except (
+                    LiteLLMAPIError,
+                    LiteLLMConnectionError,
+                    LiteLLMTimeout,
+                ) as e:
+                    logger.warning(
+                        "LiteLLM API error for model %s: %s",
                         self.model_id,
                         e,
                     )
-                    error_msg = f"LiteLLM API error: {e}"
-                    return [ScoredOutput(score=0.0, output=error_msg)]
+                    return [ScoredOutput(
+                        score=0.0,
+                        output="LLM inference failed",
+                    )]
+                except Exception:
+                    logger.exception(
+                        "Unexpected error during LiteLLM "
+                        "acompletion for model %s",
+                        self.model_id,
+                    )
+                    return [ScoredOutput(
+                        score=0.0,
+                        output="LLM inference failed",
+                    )]
 
         tasks = [_process_single(prompt) for prompt in batch_prompts]
-        results = await asyncio.gather(*tasks)
-        return list(results)
+        return list(await asyncio.gather(*tasks))
