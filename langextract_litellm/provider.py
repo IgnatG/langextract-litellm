@@ -133,6 +133,17 @@ class LiteLLMLanguageModel(BaseLanguageModel):
             A single-element list of ScoredOutput with score 1.0
             on success, or score 0.0 for empty/missing content.
         """
+        # Log token usage when available.
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            logger.debug(
+                "Token usage for %s: prompt=%s, completion=%s, " "total=%s",
+                self.model_id,
+                getattr(usage, "prompt_tokens", "?"),
+                getattr(usage, "completion_tokens", "?"),
+                getattr(usage, "total_tokens", "?"),
+            )
+
         if response.choices:
             content = response.choices[0].message.content
             if content:
@@ -205,18 +216,13 @@ class LiteLLMLanguageModel(BaseLanguageModel):
                     self.model_id,
                     e,
                 )
-                yield [ScoredOutput(
-                    score=0.0, output="LLM inference failed"
-                )]
+                yield [ScoredOutput(score=0.0, output="LLM inference failed")]
             except Exception:
                 logger.exception(
-                    "Unexpected error during LiteLLM inference "
-                    "for model %s",
+                    "Unexpected error during LiteLLM inference " "for model %s",
                     self.model_id,
                 )
-                yield [ScoredOutput(
-                    score=0.0, output="LLM inference failed"
-                )]
+                yield [ScoredOutput(score=0.0, output="LLM inference failed")]
 
     async def async_infer(
         self, batch_prompts: Sequence[str], **kwargs: Any
@@ -280,20 +286,23 @@ class LiteLLMLanguageModel(BaseLanguageModel):
                         self.model_id,
                         e,
                     )
-                    return [ScoredOutput(
-                        score=0.0,
-                        output="LLM inference failed",
-                    )]
+                    return [
+                        ScoredOutput(
+                            score=0.0,
+                            output="LLM inference failed",
+                        )
+                    ]
                 except Exception:
                     logger.exception(
-                        "Unexpected error during LiteLLM "
-                        "acompletion for model %s",
+                        "Unexpected error during LiteLLM " "acompletion for model %s",
                         self.model_id,
                     )
-                    return [ScoredOutput(
-                        score=0.0,
-                        output="LLM inference failed",
-                    )]
+                    return [
+                        ScoredOutput(
+                            score=0.0,
+                            output="LLM inference failed",
+                        )
+                    ]
 
         tasks = [_process_single(prompt) for prompt in batch_prompts]
         return list(await asyncio.gather(*tasks))

@@ -19,9 +19,12 @@
 | 9 | Delete "New folder/" (§6.1) | ✅ Done |
 | 10 | Update class docstring (§2.5) | ✅ Done |
 | — | `.gitignore` coverage (§6.2) | ✅ Already OK |
-| — | `py.typed` marker (§6.3) | Not started |
-| — | CI configuration (§6.4) | Not started |
-| — | Feature gaps (§7) | Not started |
+| 11 | `py.typed` marker (§6.3) | ✅ Done |
+| 12 | CI configuration (§6.4) | ✅ Done |
+| 13 | Token usage logging (§3.3) | ✅ Done |
+| 14 | Mock `test_plugin.py` (§5.2) | ✅ Done |
+| 15 | Model ID parsing tests (§5.3) | ✅ Done |
+| 16 | Add `ruff` to dev deps | ✅ Done |
 
 ---
 
@@ -299,13 +302,14 @@ No GitHub Actions workflow, tox config, or other CI setup exists. Even a minimal
 
 ## 7. Feature Gaps (Nice-to-Have)
 
-| Feature | Benefit | Effort |
-|---------|---------|--------|
-| **Retry logic** | Automatic retries for transient failures (429, 5xx). LiteLLM supports `num_retries` natively — just document/expose it. | Low |
-| **Streaming support** | Enable streaming responses via `stream=True` for long extractions. | Medium |
-| **Callback hooks** | LiteLLM supports `success_callback` / `failure_callback` for observability (Langfuse, OpenTelemetry, etc.). Document or expose these. | Low |
-| **Model cost tracking** | LiteLLM provides `litellm.completion_cost()` — could expose per-call and aggregate costs. | Low |
-| **Timeout configuration** | While `timeout` can be passed via `provider_kwargs`, a top-level parameter with a sensible default (e.g., 60s) would improve UX. | Low |
+| Feature | Benefit | Effort | Status |
+|---------|---------|--------|--------|
+| **Retry logic** | Automatic retries for transient failures (429, 5xx). LiteLLM supports `num_retries` natively — just pass via `provider_kwargs`. | Low | ✅ Already supported via `provider_kwargs` — documented in README |
+| **Streaming support** | Enable streaming responses via `stream=True` for long extractions. | Medium | Deferred — not needed for LangExtract's batch extraction model |
+| **Callback hooks** | LiteLLM supports `success_callback` / `failure_callback` for observability (Langfuse, OpenTelemetry, etc.). | Low | ✅ Already supported via `provider_kwargs` |
+| **Model cost tracking** | LiteLLM provides `litellm.completion_cost()` — could expose per-call and aggregate costs. | Low | Deferred |
+| **Timeout configuration** | While `timeout` can be passed via `provider_kwargs`, a top-level parameter with a sensible default (e.g., 60s) would improve UX. | Low | ✅ Already supported via `provider_kwargs` |
+| **Token usage logging** | Log prompt/completion/total tokens at DEBUG level. | Low | ✅ Done (§3.3) |
 
 ---
 
@@ -317,39 +321,18 @@ No GitHub Actions workflow, tox config, or other CI setup exists. Even a minimal
 4. ~~**Add type annotations** (§2.1)~~ — ✅ Completed
 5. ~~**Extract `_parse_response` helper** (§2.2)~~ — ✅ Completed
 6. ~~**Narrow exception handling** (§2.3)~~ — ✅ Completed
-7. ~~**Fix logging granularity** (§2.4)~~ — ✅ Completed (done as part of §2.2 refactor)
+7. ~~**Fix logging granularity** (§2.4)~~ — ✅ Completed
 8. ~~**Move tests to `tests/`** (§5.1)~~ — ✅ Completed
 9. ~~**Delete "New folder/"** (§6.1)~~ — ✅ Completed
 10. ~~**Update class docstring** (§2.5)~~ — ✅ Completed
+11. ~~**Add `py.typed` marker** (§6.3)~~ — ✅ Completed
+12. ~~**Add CI workflow** (§6.4)~~ — ✅ Completed
+13. ~~**Token usage logging** (§3.3)~~ — ✅ Completed
+14. ~~**Mock `test_plugin.py`** (§5.2)~~ — ✅ Completed
+15. ~~**Model ID parsing tests** (§5.3)~~ — ✅ Completed
+16. ~~**Add `ruff` to dev deps**~~ — ✅ Completed
 
----
+All identified improvements have been implemented.
+-     logger.debug("Calling LiteLLM completion for model %s", self.model_id)
 
-## Quick-Win Patch (Items 1, 2, 4, 6, 7, 9)
-
-These can be applied in a single commit with minimal risk:
-
-```python
-# provider.py — key changes only (not a complete diff)
-
-# Remove unused imports
-- from langextract import data, exceptions, schema
-+ # (removed — unused)
-
-# Fix api_key bug + add type hints
-- def __init__(self, model_id: str, api_key: str = None, **kwargs):
-+ def __init__(self, model_id: str, **kwargs: Any) -> None:
-
-# Fix batch_prompts type hint
-- def infer(self, batch_prompts, **kwargs) -> Iterator[...]:
-+ def infer(self, batch_prompts: Sequence[str], **kwargs: Any) -> Iterator[...]:
-
-# Simplify truthiness check
-- if response.choices and len(response.choices) > 0:
-+ if response.choices:
-
-# Logging — batch level
-+ logger.info("Running inference for %d prompts on %s", len(batch_prompts), self.model_id)
-  for prompt in batch_prompts:
--     logger.info("Calling LiteLLM completion for model %s", self.model_id)
-+     logger.debug("Calling LiteLLM completion for model %s", self.model_id)
 ```

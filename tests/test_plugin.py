@@ -1,97 +1,101 @@
-#!/usr/bin/env python3
-"""Test script for LiteLLM provider (Step 5 checklist)."""
+"""Tests for LiteLLM provider plugin registration and factory integration.
 
-import re
-import sys
+Verifies that:
+- The provider is registered via the ``langextract.providers`` entry point.
+- ``registry.resolve()`` routes ``litellm*`` model IDs correctly.
+- Unknown model IDs do **not** resolve to this provider.
+- Factory integration creates the correct class.
+- Sync ``infer()`` returns expected results (mocked).
+"""
+
+from __future__ import annotations
+
+from unittest import mock
 
 import langextract as lx
+import pytest
 from langextract.providers import registry
 
-try:
-    from langextract_litellm import LiteLLMLanguageModel
-except ImportError:
-    print("ERROR: Plugin not installed. Run: pip install -e .")
-    sys.exit(1)
+from langextract_litellm import LiteLLMLanguageModel
 
+# Ensure plugins are loaded before tests run.
 lx.providers.load_plugins_once()
 
-PROVIDER_CLS_NAME = "LiteLLMLanguageModel"
-PATTERNS = ["^litellm"]
+
+# ── Helpers ──────────────────────────────────────────────────────
 
 
-def _example_id(pattern: str) -> str:
-    """Generate test model ID from pattern."""
-    base = re.sub(r"^\^", "", pattern)
-    m = re.match(r"[A-Za-z0-9._-]+", base)
-    base = m.group(0) if m else (base or "model")
-    return f"{base}-azure/gpt-4o"
+def _mock_response(content: str = "ok"):
+    """Build a minimal mock that looks like a litellm response."""
+    choice = mock.MagicMock()
+    choice.message.content = content
+    resp = mock.MagicMock()
+    resp.choices = [choice]
+    resp.usage = None
+    return resp
 
 
-sample_ids = [_example_id(p) for p in PATTERNS]
-sample_ids.append("unknown-model")
+# ── Tests ────────────────────────────────────────────────────────
 
-print("Testing LiteLLM Provider - Step 5 Checklist:")
-print("-" * 50)
 
-# 1 & 2. Provider registration + pattern matching via resolve()
-print("1–2. Provider registration & pattern matching")
-for model_id in sample_ids:
-    try:
-        provider_class = registry.resolve(model_id)
-        ok = provider_class.__name__ == PROVIDER_CLS_NAME
-        status = "✓" if (ok or model_id == "unknown-model") else "✗"
-        note = (
-            "expected"
-            if ok
-            else (
-                "expected (no provider)"
-                if model_id == "unknown-model"
-                else "unexpected provider"
-            )
+class TestProviderRegistration:
+    """Provider discovery and pattern matching."""
+
+    def test_litellm_prefix_resolves(self) -> None:
+        """``litellm-*`` model IDs should resolve to our provider."""
+        cls = registry.resolve("litellm-azure/gpt-4o")
+        assert cls.__name__ == "LiteLLMLanguageModel"
+
+    def test_litellm_slash_prefix_resolves(self) -> None:
+        """``litellm/…`` model IDs should resolve to our provider."""
+        cls = registry.resolve("litellm/gpt-4o")
+        assert cls.__name__ == "LiteLLMLanguageModel"
+
+    def test_unknown_model_does_not_resolve(self) -> None:
+        """Non-litellm model IDs should not resolve to us."""
+        with pytest.raises(Exception):
+            registry.resolve("unknown-model")
+
+
+class TestInference:
+    """Basic inference smoke tests (mocked)."""
+
+    def test_sync_infer_returns_results(self) -> None:
+        """Sync infer should yield one result per prompt."""
+        provider = LiteLLMLanguageModel(model_id="litellm/gpt-4o")
+
+        with mock.patch("litellm.completion") as m:
+            m.return_value = _mock_response("Hello!")
+            results = list(provider.infer(["prompt1", "prompt2"]))
+
+        assert len(results) == 2
+        assert results[0][0].score == 1.0
+        assert results[0][0].output == "Hello!"
+        assert m.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_async_infer_returns_results(self) -> None:
+        """Async infer should return one result per prompt."""
+        provider = LiteLLMLanguageModel(model_id="litellm/gpt-4o")
+
+        with mock.patch("litellm.acompletion", new_callable=mock.AsyncMock) as m:
+            m.return_value = _mock_response("World!")
+            results = await provider.async_infer(["prompt1"])
+
+        assert len(results) == 1
+        assert results[0][0].output == "World!"
+
+
+class TestFactoryIntegration:
+    """Integration with langextract.factory."""
+
+    def test_factory_creates_provider(self) -> None:
+        """Factory should instantiate LiteLLMLanguageModel."""
+        from langextract import factory
+
+        config = factory.ModelConfig(
+            model_id="litellm-azure/gpt-4o",
+            provider="LiteLLMLanguageModel",
         )
-        print(
-            f"   {status} {model_id} -> {provider_class.__name__ if ok else 'resolved'} {note}"
-        )
-    except Exception as e:
-        if model_id == "unknown-model":
-            print(f"   ✓ {model_id}: No provider found (expected)")
-        else:
-            print(f"   ✗ {model_id}: resolve() failed: {e}")
-
-# 3. Inference sanity check
-print("\n3. Test inference with sample prompts")
-try:
-    model_id = (
-        sample_ids[0]
-        if sample_ids[0] != "unknown-model"
-        else (_example_id(PATTERNS[0]) if PATTERNS else "test-model")
-    )
-    provider = LiteLLMLanguageModel(model_id=model_id)
-    prompts = ["Test prompt 1", "Test prompt 2"]
-    results = list(provider.infer(prompts))
-    print(f"   ✓ Inference returned {len(results)} results")
-    for i, result in enumerate(results):
-        try:
-            out = result[0].output if result and result[0] else None
-            print(f"   ✓ Result {i+1}: {(out or '')[:60]}...")
-        except Exception:
-            print(f"   ✗ Result {i+1}: Unexpected result shape: {result}")
-except Exception as e:
-    print(f"   ✗ ERROR: {e}")
-
-# 5. Test factory integration
-print("\n5. Test factory integration")
-try:
-    from langextract import factory
-
-    config = factory.ModelConfig(
-        model_id=_example_id(PATTERNS[0]) if PATTERNS else "test-model",
-        provider="LiteLLMLanguageModel",
-    )
-    model = factory.create_model(config)
-    print(f"   ✓ Factory created: {type(model).__name__}")
-except Exception as e:
-    print(f"   ✗ ERROR: {e}")
-
-print("\n" + "-" * 50)
-print("✅ Testing complete!")
+        model = factory.create_model(config)
+        assert type(model).__name__ == "LiteLLMLanguageModel"
