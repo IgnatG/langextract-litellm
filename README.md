@@ -38,21 +38,25 @@ This provider handles model IDs that start with `litellm` and supports a wide ra
 Configure authentication using LiteLLM's standard environment variable format. Set the appropriate variables based on your provider:
 
 ### OpenAI
+
 ```bash
 export OPENAI_API_KEY="your-api-key"
 ```
 
 ### Anthropic
+
 ```bash
 export ANTHROPIC_API_KEY="your-api-key"
 ```
 
 ### HuggingFace
+
 ```bash
 export HUGGINGFACE_API_KEY="your-api-key"
 ```
 
 ### Azure OpenAI
+
 ```bash
 export AZURE_API_KEY="your-azure-key"
 export AZURE_API_BASE="https://your-resource.openai.azure.com/"
@@ -60,6 +64,7 @@ export AZURE_API_VERSION="2024-02-01"
 ```
 
 ### Google (VertexAI)
+
 ```bash
 export VERTEXAI_PROJECT="your-project-id"
 export VERTEXAI_LOCATION="us-central1"
@@ -67,6 +72,7 @@ export VERTEXAI_LOCATION="us-central1"
 ```
 
 ### Other Providers
+
 See the [LiteLLM documentation](https://docs.litellm.ai/docs/#basic-usage) for environment variables for other providers like HuggingFace, Cohere, AI21, etc.
 
 ## Usage
@@ -80,6 +86,7 @@ import langextract as lx
 config = lx.factory.ModelConfig(
     model_id="litellm/azure/gpt-4o",  # or "gpt-4", "claude-3-sonnet", etc.
     provider="LiteLLMLanguageModel",
+    provider_kwargs={},  # pass provider-specific kwargs here (e.g. {"api_key": "..."})
 )
 model = lx.factory.create_model(config)
 
@@ -132,6 +139,7 @@ examples = [
 config = lx.factory.ModelConfig(
     model_id="litellm/azure/gpt-4o",
     provider="LiteLLMLanguageModel",
+    provider_kwargs={},  # pass provider-specific kwargs here (e.g. {"api_key": "..."})
 )
 model = lx.factory.create_model(config)
 
@@ -164,19 +172,35 @@ model_id = "litellm-claude-3-sonnet"
 
 ### Advanced Configuration
 
-You can pass additional parameters supported by LiteLLM:
+Pass additional parameters supported by LiteLLM using `provider_kwargs`. This is the correct way to supply model-specific settings (API keys, temperature, etc.) to LangExtract:
 
 ```python
 config = lx.factory.ModelConfig(
     model_id="litellm/gpt-4",
     provider="LiteLLMLanguageModel",
-    temperature=0.7,
-    max_tokens=1000,
-    top_p=0.9,
-    frequency_penalty=0.1,
-    presence_penalty=0.1,
-    timeout=30,
+    provider_kwargs={
+        "temperature": 0.7,
+        "max_tokens": 1000,
+        "top_p": 0.9,
+        "frequency_penalty": 0.1,
+        "presence_penalty": 0.1,
+        "timeout": 30,
+    },
 )
+model = lx.factory.create_model(config)
+```
+
+To supply an API key directly instead of via an environment variable:
+
+```python
+config = lx.factory.ModelConfig(
+    model_id="litellm/gpt-4",
+    provider="LiteLLMLanguageModel",
+    provider_kwargs={
+        "api_key": "sk-...",
+    },
+)
+model = lx.factory.create_model(config)
 ```
 
 ## Expected Output
