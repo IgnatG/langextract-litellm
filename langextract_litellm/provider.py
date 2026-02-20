@@ -7,7 +7,9 @@ from typing import Any
 
 import langextract as lx
 import litellm
-from langextract import data, exceptions, inference, schema
+from langextract import data, exceptions, schema
+from langextract.core.base_model import BaseLanguageModel
+from langextract.core.types import ScoredOutput
 from langextract.providers import registry
 
 logger = logging.getLogger(__name__)
@@ -18,7 +20,7 @@ _INTERNAL_KEYS: frozenset[str] = frozenset({"max_workers", "pass_num"})
 
 
 @lx.providers.registry.register(r"^litellm", priority=10)
-class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
+class LiteLLMLanguageModel(BaseLanguageModel):
     """LangExtract provider for LiteLLM.
 
     This provider supports a wide range of models through LiteLLM's unified API,
@@ -106,7 +108,7 @@ class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
 
     def infer(
         self, batch_prompts, **kwargs
-    ) -> Iterator[Sequence[inference.ScoredOutput]]:
+    ) -> Iterator[Sequence[ScoredOutput]]:
         """Run inference on a batch of prompts.
 
         Args:
@@ -148,19 +150,19 @@ class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
                 if response.choices and len(response.choices) > 0:
                     content = response.choices[0].message.content
                     if content:
-                        yield [lx.inference.ScoredOutput(score=1.0, output=content)]
+                        yield [ScoredOutput(score=1.0, output=content)]
                     else:
                         logger.warning(
                             "Empty response from LiteLLM for model %s",
                             self.model_id,
                         )
-                        yield [lx.inference.ScoredOutput(score=0.0, output="")]
+                        yield [ScoredOutput(score=0.0, output="")]
                 else:
                     logger.error(
                         "No choices in response from LiteLLM for model %s",
                         self.model_id,
                     )
-                    yield [lx.inference.ScoredOutput(score=0.0, output="")]
+                    yield [ScoredOutput(score=0.0, output="")]
 
             except Exception as e:
                 logger.error(
@@ -169,11 +171,11 @@ class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
                     e,
                 )
                 error_msg = f"LiteLLM API error: {e}"
-                yield [lx.inference.ScoredOutput(score=0.0, output=error_msg)]
+                yield [ScoredOutput(score=0.0, output=error_msg)]
 
     async def async_infer(
         self, batch_prompts, **kwargs
-    ) -> list[Sequence[lx.inference.ScoredOutput]]:
+    ) -> list[Sequence[ScoredOutput]]:
         """Native async inference using ``litellm.acompletion``.
 
         Uses a shared ``asyncio.Semaphore`` for concurrency control
@@ -200,7 +202,7 @@ class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
         if pass_num >= 1:
             call_kwargs["cache"] = {"no-cache": True}
 
-        async def _process_single(prompt: str) -> list[lx.inference.ScoredOutput]:
+        async def _process_single(prompt: str) -> list[ScoredOutput]:
             async with semaphore:
                 try:
                     logger.info(
@@ -219,20 +221,20 @@ class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
                         content = response.choices[0].message.content
                         if content:
                             return [
-                                lx.inference.ScoredOutput(score=1.0, output=content)
+                                ScoredOutput(score=1.0, output=content)
                             ]
                         else:
                             logger.warning(
                                 "Empty response from LiteLLM for model %s",
                                 self.model_id,
                             )
-                            return [lx.inference.ScoredOutput(score=0.0, output="")]
+                            return [ScoredOutput(score=0.0, output="")]
                     else:
                         logger.error(
                             "No choices in response from LiteLLM for model %s",
                             self.model_id,
                         )
-                        return [lx.inference.ScoredOutput(score=0.0, output="")]
+                        return [ScoredOutput(score=0.0, output="")]
 
                 except Exception as e:
                     logger.error(
@@ -241,7 +243,7 @@ class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
                         e,
                     )
                     error_msg = f"LiteLLM API error: {e}"
-                    return [lx.inference.ScoredOutput(score=0.0, output=error_msg)]
+                    return [ScoredOutput(score=0.0, output=error_msg)]
 
         tasks = [_process_single(prompt) for prompt in batch_prompts]
         results = await asyncio.gather(*tasks)
