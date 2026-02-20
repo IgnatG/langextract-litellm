@@ -155,6 +155,40 @@ print("✅ Extraction successful!")
 print(f"Results: {result}")
 ```
 
+### Async Usage
+
+The LiteLLM provider supports native async inference via `litellm.acompletion`,
+which avoids thread overhead and enables true concurrent I/O:
+
+```python
+import asyncio
+import langextract as lx
+
+config = lx.factory.ModelConfig(
+    model_id="litellm/azure/gpt-4o",
+    provider="LiteLLMLanguageModel",
+    provider_kwargs={},
+)
+model = lx.factory.create_model(config)
+
+async def main():
+    result = await lx.async_extract(
+        text_or_documents="Lady Juliet gazed longingly at the stars...",
+        model=model,
+        prompt_description="Extract characters and emotions.",
+        examples=[...],
+    )
+    print(result)
+
+asyncio.run(main())
+```
+
+When using `async_extract`, the LiteLLM provider:
+
+- Uses `asyncio.Semaphore` instead of `ThreadPoolExecutor` for concurrency control
+- Calls `litellm.acompletion()` for non-blocking HTTP requests
+- Pipelines inference with alignment for improved throughput
+
 ### Model ID Formats
 
 The model ID must start with `litellm/` or `litellm-` to be handled by this provider.

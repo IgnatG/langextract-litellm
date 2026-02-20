@@ -1,16 +1,20 @@
 """Provider implementation for LiteLLM."""
 
+import asyncio
 import logging
-import os
 from collections.abc import Iterator, Sequence
+from typing import Any
 
 import langextract as lx
 import litellm
 from langextract import data, exceptions, inference, schema
 from langextract.providers import registry
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Keys consumed internally by the provider and must not be
+# forwarded to ``litellm.completion()`` / ``litellm.acompletion()``.
+_INTERNAL_KEYS: frozenset[str] = frozenset({"max_workers"})
 
 
 @lx.providers.registry.register(r"^litellm", priority=10)
@@ -59,10 +63,46 @@ class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
 
         self.original_model_id = model_id
 
-        # Store provider-specific parameters
+        # Pop internal keys before storing provider kwargs so they
+        # are never forwarded to ``litellm.completion()``.
+        self._max_workers: int = kwargs.pop("max_workers", 10)
         self.provider_kwargs = kwargs
 
-        logger.info(f"Initialized LiteLLM provider for model: {self.model_id}")
+        # Lazily initialised in ``_get_semaphore`` to avoid binding
+        # to an event loop that may not exist yet at construction.
+        self._semaphore: asyncio.Semaphore | None = None
+
+        logger.info("Initialized LiteLLM provider for model: %s", self.model_id)
+
+    @property
+    def _litellm_kwargs(self) -> dict[str, Any]:
+        """Provider kwargs with internal-only keys stripped.
+
+        Ensures keys like ``max_workers`` that are consumed by
+        the provider itself are never forwarded to
+        ``litellm.completion()`` / ``litellm.acompletion()``.
+
+        Note: ``__init__`` already pops keys listed in
+        ``_INTERNAL_KEYS`` from kwargs, so this filter is a
+        belt-and-suspenders defence against future direct mutation
+        of ``provider_kwargs``.  When adding new internal keys,
+        update **both** the ``pop`` in ``__init__`` and the
+        ``_INTERNAL_KEYS`` set.
+        """
+        return {
+            k: v for k, v in self.provider_kwargs.items() if k not in _INTERNAL_KEYS
+        }
+
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        """Return the concurrency-limiting semaphore.
+
+        Lazily initialised so it is bound to the running event
+        loop, not whichever loop (if any) existed at
+        construction time.
+        """
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(self._max_workers)
+        return self._semaphore
 
     def infer(
         self, batch_prompts, **kwargs
@@ -71,17 +111,18 @@ class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
 
         Args:
             batch_prompts: List of prompts to process.
-            **kwargs: Additional inference parameters that override instance defaults.
+            **kwargs: Additional inference parameters that override
+                instance defaults.
 
         Yields:
             Lists of ScoredOutput objects, one per prompt.
         """
-        # Merge provider kwargs with call-time kwargs (call-time takes precedence)
-        # api_params = {**self.provider_kwargs, **kwargs}
-
         for prompt in batch_prompts:
             try:
-                logger.info(f"Calling LiteLLM completion for model {self.model_id}")
+                logger.info(
+                    "Calling LiteLLM completion for model %s",
+                    self.model_id,
+                )
 
                 # Format prompt as messages for chat models
                 messages = [{"role": "user", "content": str(prompt)}]
@@ -89,7 +130,7 @@ class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
                 response = litellm.completion(
                     model=self.model_id,
                     messages=messages,
-                    **self.provider_kwargs,
+                    **self._litellm_kwargs,
                 )
 
                 # Extract the response content
@@ -99,19 +140,88 @@ class LiteLLMLanguageModel(lx.inference.BaseLanguageModel):
                         yield [lx.inference.ScoredOutput(score=1.0, output=content)]
                     else:
                         logger.warning(
-                            f"Empty response from LiteLLM for model {self.model_id}"
+                            "Empty response from LiteLLM for model %s",
+                            self.model_id,
                         )
                         yield [lx.inference.ScoredOutput(score=0.0, output="")]
                 else:
                     logger.error(
-                        f"No choices in response from LiteLLM for model {self.model_id}"
+                        "No choices in response from LiteLLM for model %s",
+                        self.model_id,
                     )
                     yield [lx.inference.ScoredOutput(score=0.0, output="")]
 
             except Exception as e:
                 logger.error(
-                    f"Error calling LiteLLM completion for model {self.model_id}: {str(e)}"
+                    "Error calling LiteLLM completion for model %s: %s",
+                    self.model_id,
+                    e,
                 )
-                # Return an error output instead of raising
-                error_msg = f"LiteLLM API error: {str(e)}"
+                error_msg = f"LiteLLM API error: {e}"
                 yield [lx.inference.ScoredOutput(score=0.0, output=error_msg)]
+
+    async def async_infer(
+        self, batch_prompts, **kwargs
+    ) -> list[Sequence[lx.inference.ScoredOutput]]:
+        """Native async inference using ``litellm.acompletion``.
+
+        Uses a shared ``asyncio.Semaphore`` for concurrency control
+        instead of ``ThreadPoolExecutor``, eliminating thread creation
+        overhead while providing explicit back-pressure across
+        concurrent batches.
+
+        Args:
+            batch_prompts: List of prompts to process.
+            **kwargs: Additional inference parameters.
+
+        Returns:
+            List of lists of ScoredOutput objects, one per prompt.
+        """
+        semaphore = self._get_semaphore()
+
+        async def _process_single(prompt: str) -> list[lx.inference.ScoredOutput]:
+            async with semaphore:
+                try:
+                    logger.info(
+                        "Calling LiteLLM acompletion for model %s",
+                        self.model_id,
+                    )
+                    messages = [{"role": "user", "content": str(prompt)}]
+
+                    response = await litellm.acompletion(
+                        model=self.model_id,
+                        messages=messages,
+                        **self._litellm_kwargs,
+                    )
+
+                    if response.choices and len(response.choices) > 0:
+                        content = response.choices[0].message.content
+                        if content:
+                            return [
+                                lx.inference.ScoredOutput(score=1.0, output=content)
+                            ]
+                        else:
+                            logger.warning(
+                                "Empty response from LiteLLM for model %s",
+                                self.model_id,
+                            )
+                            return [lx.inference.ScoredOutput(score=0.0, output="")]
+                    else:
+                        logger.error(
+                            "No choices in response from LiteLLM for model %s",
+                            self.model_id,
+                        )
+                        return [lx.inference.ScoredOutput(score=0.0, output="")]
+
+                except Exception as e:
+                    logger.error(
+                        "Error calling LiteLLM acompletion for model %s: %s",
+                        self.model_id,
+                        e,
+                    )
+                    error_msg = f"LiteLLM API error: {e}"
+                    return [lx.inference.ScoredOutput(score=0.0, output=error_msg)]
+
+        tasks = [_process_single(prompt) for prompt in batch_prompts]
+        results = await asyncio.gather(*tasks)
+        return list(results)
