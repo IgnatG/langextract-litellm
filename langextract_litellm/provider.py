@@ -137,11 +137,11 @@ class LiteLLMLanguageModel(BaseLanguageModel):
             self._last_usage = UsageStats()
             self._total_usage = UsageStats()
 
-    def _record_usage(self, response: Any) -> None:
+    def _record_usage(self, response: Any) -> UsageStats | None:
         """Extract token usage from *response* and update accumulators."""
         usage = getattr(response, "usage", None)
         if usage is None:
-            return
+            return None
         stats = UsageStats(
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
@@ -157,6 +157,7 @@ class LiteLLMLanguageModel(BaseLanguageModel):
         with self._usage_lock:
             self._last_usage = stats
             self._total_usage += stats
+        return stats
 
     @property
     def _litellm_kwargs(self) -> dict[str, Any]:
@@ -204,22 +205,29 @@ class LiteLLMLanguageModel(BaseLanguageModel):
             A single-element list of ScoredOutput with score 1.0
             on success, or score 0.0 for empty/missing content.
         """
-        self._record_usage(response)
+        stats = self._record_usage(response)
+        usage_dict = None
+        if stats is not None:
+            usage_dict = {
+                "prompt_tokens": stats.prompt_tokens,
+                "completion_tokens": stats.completion_tokens,
+                "total_tokens": stats.total_tokens,
+            }
 
         if response.choices:
             content = response.choices[0].message.content
             if content:
-                return [ScoredOutput(score=1.0, output=content)]
+                return [ScoredOutput(score=1.0, output=content, usage=usage_dict)]
             logger.warning(
                 "Empty response from LiteLLM for model %s",
                 self.model_id,
             )
-            return [ScoredOutput(score=0.0, output="")]
+            return [ScoredOutput(score=0.0, output="", usage=usage_dict)]
         logger.error(
             "No choices in response from LiteLLM for model %s",
             self.model_id,
         )
-        return [ScoredOutput(score=0.0, output="")]
+        return [ScoredOutput(score=0.0, output="", usage=usage_dict)]
 
     def infer(
         self, batch_prompts: Sequence[str], **kwargs: Any
