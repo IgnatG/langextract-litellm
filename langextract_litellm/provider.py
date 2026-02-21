@@ -281,7 +281,7 @@ class LiteLLMLanguageModel(BaseLanguageModel):
                 yield [ScoredOutput(score=0.0, output="LLM inference failed")]
             except Exception:
                 logger.exception(
-                    "Unexpected error during LiteLLM inference " "for model %s",
+                    "Unexpected error during LiteLLM inference for model %s",
                     self.model_id,
                 )
                 yield [ScoredOutput(score=0.0, output="LLM inference failed")]
@@ -356,7 +356,7 @@ class LiteLLMLanguageModel(BaseLanguageModel):
                     ]
                 except Exception:
                     logger.exception(
-                        "Unexpected error during LiteLLM " "acompletion for model %s",
+                        "Unexpected error during LiteLLM acompletion for model %s",
                         self.model_id,
                     )
                     return [
