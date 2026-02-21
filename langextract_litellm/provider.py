@@ -1,7 +1,9 @@
 """Provider implementation for LiteLLM."""
 
 import asyncio
+import dataclasses
 import logging
+import threading
 from collections.abc import Iterator, Sequence
 from typing import Any
 
@@ -21,6 +23,27 @@ logger = logging.getLogger(__name__)
 # Keys consumed internally by the provider and must not be
 # forwarded to ``litellm.completion()`` / ``litellm.acompletion()``.
 _INTERNAL_KEYS: frozenset[str] = frozenset({"max_workers", "pass_num"})
+
+
+@dataclasses.dataclass
+class UsageStats:
+    """Token usage statistics returned by the LLM.
+
+    Instances are available via :pyattr:`LiteLLMLanguageModel.last_usage`
+    (most recent call) and :pyattr:`LiteLLMLanguageModel.total_usage`
+    (cumulative across all calls since the last :pymeth:`reset_usage`).
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+    def __iadd__(self, other: "UsageStats") -> "UsageStats":
+        """Accumulate usage from *other* into this instance."""
+        self.prompt_tokens += other.prompt_tokens
+        self.completion_tokens += other.completion_tokens
+        self.total_tokens += other.total_tokens
+        return self
 
 
 @lx.providers.registry.register(r"^litellm", priority=10)
@@ -86,7 +109,55 @@ class LiteLLMLanguageModel(BaseLanguageModel):
         # to an event loop that may not exist yet at construction.
         self._semaphore: asyncio.Semaphore | None = None
 
+        # Token-usage tracking — thread-safe via a lock.
+        self._usage_lock = threading.Lock()
+        self._last_usage = UsageStats()
+        self._total_usage = UsageStats()
+
         logger.info("Initialized LiteLLM provider for model: %s", self.model_id)
+
+    # ------------------------------------------------------------------
+    # Token-usage public API
+    # ------------------------------------------------------------------
+
+    @property
+    def last_usage(self) -> UsageStats:
+        """Token usage from the most recent ``infer`` / ``async_infer`` call."""
+        with self._usage_lock:
+            return dataclasses.replace(self._last_usage)
+
+    @property
+    def total_usage(self) -> UsageStats:
+        """Cumulative token usage since construction or last ``reset_usage``."""
+        with self._usage_lock:
+            return dataclasses.replace(self._total_usage)
+
+    def reset_usage(self) -> None:
+        """Reset both ``last_usage`` and ``total_usage`` to zero."""
+        with self._usage_lock:
+            self._last_usage = UsageStats()
+            self._total_usage = UsageStats()
+
+    def _record_usage(self, response: Any) -> None:
+        """Extract token usage from *response* and update accumulators."""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        stats = UsageStats(
+            prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+            completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+            total_tokens=getattr(usage, "total_tokens", 0) or 0,
+        )
+        logger.debug(
+            "Token usage for %s: prompt=%d, completion=%d, total=%d",
+            self.model_id,
+            stats.prompt_tokens,
+            stats.completion_tokens,
+            stats.total_tokens,
+        )
+        with self._usage_lock:
+            self._last_usage = stats
+            self._total_usage += stats
 
     @property
     def _litellm_kwargs(self) -> dict[str, Any]:
@@ -123,6 +194,7 @@ class LiteLLMLanguageModel(BaseLanguageModel):
 
         Centralises the response-extraction logic so that both
         ``infer()`` and ``async_infer()`` share the same code path.
+        Also records token usage via ``_record_usage``.
 
         Args:
             response: The response object returned by
@@ -133,16 +205,7 @@ class LiteLLMLanguageModel(BaseLanguageModel):
             A single-element list of ScoredOutput with score 1.0
             on success, or score 0.0 for empty/missing content.
         """
-        # Log token usage when available.
-        usage = getattr(response, "usage", None)
-        if usage is not None:
-            logger.debug(
-                "Token usage for %s: prompt=%s, completion=%s, " "total=%s",
-                self.model_id,
-                getattr(usage, "prompt_tokens", "?"),
-                getattr(usage, "completion_tokens", "?"),
-                getattr(usage, "total_tokens", "?"),
-            )
+        self._record_usage(response)
 
         if response.choices:
             content = response.choices[0].message.content

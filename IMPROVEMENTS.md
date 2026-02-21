@@ -25,6 +25,7 @@
 | 14 | Mock `test_plugin.py` (§5.2) | ✅ Done |
 | 15 | Model ID parsing tests (§5.3) | ✅ Done |
 | 16 | Add `ruff` to dev deps | ✅ Done |
+| 17 | Provider-level usage accumulator (§3.3+) | ✅ Done |
 
 ---
 
@@ -309,7 +310,7 @@ No GitHub Actions workflow, tox config, or other CI setup exists. Even a minimal
 | **Callback hooks** | LiteLLM supports `success_callback` / `failure_callback` for observability (Langfuse, OpenTelemetry, etc.). | Low | ✅ Already supported via `provider_kwargs` |
 | **Model cost tracking** | LiteLLM provides `litellm.completion_cost()` — could expose per-call and aggregate costs. | Low | Deferred |
 | **Timeout configuration** | While `timeout` can be passed via `provider_kwargs`, a top-level parameter with a sensible default (e.g., 60s) would improve UX. | Low | ✅ Already supported via `provider_kwargs` |
-| **Token usage logging** | Log prompt/completion/total tokens at DEBUG level. | Low | ✅ Done (§3.3) |
+| **Token usage tracking** | Log prompt/completion/total tokens at DEBUG level + expose via `last_usage` / `total_usage` properties. | Low | ✅ Done (§3.3) — `UsageStats` dataclass, provider-level accumulator |
 
 ---
 
@@ -331,8 +332,6 @@ No GitHub Actions workflow, tox config, or other CI setup exists. Even a minimal
 14. ~~**Mock `test_plugin.py`** (§5.2)~~ — ✅ Completed
 15. ~~**Model ID parsing tests** (§5.3)~~ — ✅ Completed
 16. ~~**Add `ruff` to dev deps**~~ — ✅ Completed
+17. ~~**Provider-level usage accumulator** (§3.3+)~~ — ✅ Completed
 
 All identified improvements have been implemented.
--     logger.debug("Calling LiteLLM completion for model %s", self.model_id)
-
-```
