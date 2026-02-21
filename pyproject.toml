@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=82.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "langextract-litellm"
-version = "0.1.0"
+version = "0.2.0"
 description = "LangExtract provider plugin for LiteLLM"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -11,7 +11,6 @@ import langextract as lx
 import litellm
 from langextract.core.base_model import BaseLanguageModel
 from langextract.core.types import ScoredOutput
-from langextract.providers import registry
 from litellm.exceptions import (
     APIConnectionError as LiteLLMConnectionError,
     APIError as LiteLLMAPIError,
