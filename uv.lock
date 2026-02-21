@@ -1122,7 +1122,7 @@ wheels = [
 [[package]]
 name = "langextract"
 version = "1.1.1"
-source = { git = "https://github.com/IgnatG/langextract.git?rev=develop#0f058fe4f57e946cd4e6942dfe08eae2ba54bd77" }
+source = { git = "https://github.com/IgnatG/langextract.git?rev=develop#3767481ce681574887db13a1ab1fee183a3fec7f" }
 dependencies = [
     { name = "absl-py" },
     { name = "aiohttp" },
